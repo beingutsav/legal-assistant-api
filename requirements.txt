@@ -7,3 +7,4 @@ convex
 google-generativeai
 uvicorn
 fastapi
+fastapi-cors
