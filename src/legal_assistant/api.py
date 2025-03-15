@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from legal_assistant.legal_assistant import handle_query, create_chat_session
+from .legal_assistant import handle_query, create_chat_session
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()

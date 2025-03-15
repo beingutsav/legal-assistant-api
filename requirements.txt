@@ -8,3 +8,5 @@ google-generativeai
 uvicorn
 fastapi
 fastapi-cors
+requests
+google-api-python-client
