@@ -29,9 +29,10 @@ logger = logging.getLogger(__name__)
 
 # Initialize clients - updated Convex initialization
 convex_url = os.getenv("CONVEX_URL")
-logger.info(f"convex url is: {convex_url}")
+convex_key = os.getenv("CONVEX_KEY")
 
 convex = ConvexClient(convex_url)
+convex.set_auth(convex_key)
 
 model = SentenceTransformer('all-MiniLM-L6-v2')
 
