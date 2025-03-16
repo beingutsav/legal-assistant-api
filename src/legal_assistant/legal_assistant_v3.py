@@ -29,10 +29,9 @@ logger = logging.getLogger(__name__)
 
 # Initialize clients - updated Convex initialization
 convex_url = os.getenv("CONVEX_URL")
-convex_key = os.getenv("CONVEX_KEY")
+#convex_key = os.getenv("CONVEX_KEY")
 
 convex = ConvexClient(convex_url)
-convex.set_auth(convex_key)
 
 model = SentenceTransformer('all-MiniLM-L6-v2')
 
@@ -381,7 +380,14 @@ def update_summary_context(previous_context, query, response=None, new_cases=Non
 def handle_query(chat_id, query):
     """Main function to handle a legal query with optimized storage"""
     # Fetch context from Convex
+
+    print(f"the chat id is .. {chat_id}")
+
+    print(f"querying convex")
+
     ctx = convex.query("chats:get", {"id": chat_id}) or {}
+
+    print(f"after querying convex")
     summary_context = ctx.get("summary_context", "")
     retrieved_cases = ctx.get("retrieved_cases", "")
     conversation = ctx.get("conversation", [])
