@@ -44,7 +44,7 @@ def get_case_titles_from_google(query, max_results) -> set:
     params = {
         'key': google_api_key,
         'cx': search_engine_id,
-        'q': 'site:indiankanoon.org/doc {query}',
+        'q': {query},
         'num': min(max_results, 10),  # API maximum is 10 results per request
         'safe': 'active',  # Enable safe search
         'fields': 'items(title, link)',  # Request only necessary fields

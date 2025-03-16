@@ -58,7 +58,7 @@ MAX_STORED_CASES = 10
 # Maximum length of summary for each case
 MAX_SUMMARY_LENGTH = 500
 # Maximum search results 
-MAX_SEARCH_RESULTS_FROM_KANOON = 15
+MAX_SEARCH_RESULTS_FROM_KANOON = 5
 
 def create_chat_session():
     """Create a new chat session and return its ID"""
@@ -101,9 +101,10 @@ def generate_case_summary(query, full_text, title, max_length=MAX_SUMMARY_LENGTH
 def prepare_search_query(user_query, summary_context):
     """Generate optimized search parameters for Indian Kanoon based on user query and context"""
     prompt = f"""
-    Task: Generate an optimized search query for Indian legal case database.
+    Task: Generate an optimized search query for Indian legal matters on google search format.
     The search will be carried out on google to get the relevant case documents.
-    So use google search query format.
+    So use google search query format. Ensure that you form search query to extract specific results only. Do not be vague. Use AND etc to make it specific.
+    The search results will be fed to top lawyers to help with their reseatch pertaining to the query
     Don't mention site tag as that we will automatically append
     
     USER QUERY: {user_query}
@@ -419,19 +420,19 @@ def handle_query(chat_id, query):
             # We'll update the summary context AFTER generating the response
     
     # Find relevant cases from all retrieved cases
-    relevant_case_ids = get_relevant_cases(query, new_cases)
+    #relevant_case_ids = get_relevant_cases(query, new_cases)
     
     # Prune irrelevant cases to keep storage manageable
     #retrieved_cases = prune_irrelevant_cases(retrieved_cases, relevant_case_ids)
     
     # Get the actual case objects for relevant cases
-    relevant_cases = [case for case in new_cases if case["id"] in [id for id, _ in relevant_case_ids]]
+    #relevant_cases = [case for case in new_cases if case["id"] in [id for id, _ in relevant_case_ids]]
     
     # Prepare relevant case text for context
     case_text = ""
 
     case_titles = set()
-    for case in relevant_cases:
+    for case in new_cases:
         case_text += f"CASE: {case['title']} ({case['court']}, {case['year']})\n"
         case_text += f"CASE DETAILS: {case['doc_text']}\n\n"
         case_titles.add(case['title'])
