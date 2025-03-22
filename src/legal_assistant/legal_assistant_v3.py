@@ -63,7 +63,7 @@ MAX_STORED_CASES = 10
 # Maximum length of summary for each case
 MAX_SUMMARY_LENGTH = 500
 # Maximum search results 
-MAX_SEARCH_RESULTS_FROM_KANOON = 1
+MAX_SEARCH_RESULTS_FROM_KANOON = 5
 
 def create_chat_session():
     """Create a new chat session and return its ID"""
