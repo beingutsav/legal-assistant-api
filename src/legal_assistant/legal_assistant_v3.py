@@ -9,6 +9,10 @@ from scipy.spatial.distance import cosine
 from dotenv import load_dotenv
 from .search_google import get_case_titles_from_google
 from .sanitize_json import sanitize_to_raw_json
+from .prompts.prompts_legal import _doc_summary_prompt, _short_query_prompt, _summary_prompt_template, get_search_query_prompt, legal_research_prompt
+from .prompts.prompts_legal import get_final_legal_query_resolver_prompt
+from .prompts.prompts_legal import _greeting_prompt
+
 import logging
 
 # Load environment file from the same package
@@ -38,10 +42,11 @@ model = SentenceTransformer('all-MiniLM-L6-v2')
 # Set up Gemini
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 generation_config = {
-    "temperature": 0.2,
-    "top_p": 0.8,
-    "top_k": 40,
-    "max_output_tokens": 2500,
+    "temperature": 0.35,    # Increased from 0.2 → 0.35
+    "top_p": 0.85,          # Slightly wider sampling
+    "top_k": 60,            # Expanded candidate pool
+    "max_output_tokens": 3000, # Increased for legal citations
+    "frequency_penalty": 1.2, # Add if available
 }
 model_name = os.getenv("GEMINI_LLM_MODEL")
 gemini = genai.GenerativeModel(model_name=model_name, 
@@ -58,7 +63,7 @@ MAX_STORED_CASES = 10
 # Maximum length of summary for each case
 MAX_SUMMARY_LENGTH = 500
 # Maximum search results 
-MAX_SEARCH_RESULTS_FROM_KANOON = 5
+MAX_SEARCH_RESULTS_FROM_KANOON = 1
 
 def create_chat_session():
     """Create a new chat session and return its ID"""
@@ -72,20 +77,10 @@ def create_chat_session():
 
 def generate_case_summary(query, full_text, title, max_length=MAX_SUMMARY_LENGTH):
     """Generate a concise summary of a legal case using Gemini"""
-    prompt = f"""
-    Summarize the following legal case in 2-3 short sentences (maximum {max_length} characters) to addresst the query being asked.
-
-    QUERY: {query}
-    
-    TITLE: {title}
-    
-    CONTENT: {full_text}  # Limit input to avoid token limits
-    
-    Provide only the summary text with no additional commentary.
-    """
-    
+   
+    generate_case_summary_prompt = _doc_summary_prompt(max_length, query, title, full_text)
     try:
-        response = gemini.generate_content(prompt)
+        response = gemini.generate_content(generate_case_summary_prompt)
         summary = response.text.strip()
         # Ensure summary doesn't exceed max length
         if len(summary) > max_length:
@@ -100,23 +95,7 @@ def generate_case_summary(query, full_text, title, max_length=MAX_SUMMARY_LENGTH
 
 def prepare_search_query(user_query, summary_context):
     """Generate optimized search parameters for Indian Kanoon based on user query and context"""
-    prompt = f"""
-    Task: Generate an optimized search query for Indian legal matters on google search format.
-    The search will be carried out on google to get the relevant case documents.
-    So use google search query format. Ensure that you form search query to extract specific results only. Do not be vague. Use AND etc to make it specific.
-    The search results will be fed to top lawyers to help with their reseatch pertaining to the query
-    Don't mention site tag as that we will automatically append
-    
-    USER QUERY: {user_query}
-    
-    CONVERSATION CONTEXT: {summary_context}
-    
-    Based on the user's query and our conversation context, construct the most effective search query for finding relevant Indian legal cases. 
-    Extract key legal terms, statutes, or case references.
-    Focus on specific legal questions rather than general conversation context.
-    
-    Return ONLY the search query text as a single string, no explanation or additional text.
-    """
+    prompt = get_search_query_prompt(user_query, summary_context)
     
     try:
         response = gemini.generate_content(prompt)
@@ -164,7 +143,9 @@ def search_indian_kanoon(query, summary_context, pagenum=0, max_results=MAX_SEAR
             
             # Generate a concise summary instead of storing full text
             title = meta.get("title", "Untitled Case")
-            summary = generate_case_summary(query, doc_text, title)
+            
+            #dont need summaries, unnecessary calls
+            #summary = generate_case_summary(query, doc_text, title)
             
             # Convert year to integer if it's a float
             year = meta.get("year", "Unknown Year")
@@ -180,7 +161,7 @@ def search_indian_kanoon(query, summary_context, pagenum=0, max_results=MAX_SEAR
             case = {
                 "id": str(doc),
                 "title": title,
-                "summary": summary,  # This is now a concise summary
+               # "summary": summary,  # This is now a concise summary
                 "court": meta.get("court", "Unknown Court"),
                 "year": year,
                 "citations": [str(citation) for citation in citations][:3],  # Limit citations stored
@@ -240,149 +221,164 @@ def prune_irrelevant_cases(cases, relevant_case_ids, max_cases=MAX_STORED_CASES)
 
 def needs_api_call_with_response(query, summary_context):
     """Determine if new case research is needed and optionally generate a response"""
-    # For very short queries or common greetings, don't call the API
     query = query.strip().lower()
-    common_greetings = ["hi", "hello", "hey", "greetings", "good morning", "good afternoon", "good evening", "thanks", "thank you"]
     
-    # Short circuit for obvious non-legal queries with direct response
-    if len(query) < 10 or (any(greeting in query for greeting in common_greetings) and len(query) < 20):
-        logger.info("Query detected as greeting or too short - skipping API call")
-        
-        # Generate appropriate response for non-legal query
-        if any(greeting in query for greeting in common_greetings):
-            prompt = f"""
-            The user has sent what appears to be a greeting: "{query}"
-            
-            Respond with a friendly greeting as a legal assistant and ask how you can help with their legal query.
-            Structure your response in JSON format:
-            {{
-                "isNewResearchRequired": false,
-                "responseToUser": "your greeting response here"
-            }}
-            """
-        else:
-            prompt = f"""
-            The user has sent a very brief query: "{query}"
-            
-            Respond politely and ask for more details about their legal query.
-            Structure your response in JSON format:
-            {{
-                "isNewResearchRequired": false,
-                "responseToUser": "your response here asking for more details"
-            }}
-            """
-            
-        response = gemini.generate_content(prompt)
-        try:
-            result = json.loads(response.text.strip())
-            return result
-        except json.JSONDecodeError:
-            # Fallback if JSON parsing fails
-            return {
-                "isNewResearchRequired": False,
-                "responseToUser": "Hello! I'm your Indian legal assistant. How can I help with your legal query today?"
-            }
-        
+    # Handle non-legal/short queries first
+    if should_skip_api_call(query):
+        return handle_non_legal_query(query)
+    
+    # Initial query without context always needs research
     if not summary_context:
-        return {"isNewResearchRequired": True}  # Always call API for first substantive query
-        
-    prompt = f"""
-    Task: Determine if this user query requires legal research and provide an appropriate response.
+        return {"isNewResearchRequired": True}
     
-    First, determine if this is a legal query that requires access to legal cases or if it's casual conversation.
-    If it's just casual conversation or a non-legal question, generate an appropriate response.
-    I will directly be parsing your response into a JSON object, so please ensure it is in the RAW JSON FORMAT.
-    Dont include ```json etc in your response
+    # Determine if legal research needed based on context
+    return evaluate_legal_research_need(query, summary_context)
+
+# Helper functions below
+
+def should_skip_api_call(query: str) -> bool:
+    """Check if query is too short or a common greeting"""
+    common_greetings = ["hi", "hello", "hey", "greetings", 
+                       "good morning", "good afternoon", 
+                       "good evening", "thanks", "thank you"]
     
-    Existing Context Summary:
-    {summary_context}
+    is_short = len(query) < 10
+    is_greeting = any(greeting in query for greeting in common_greetings) and len(query) < 20
+    return is_short or is_greeting
+
+def handle_non_legal_query(query: str) -> dict:
+    """Generate responses for non-legal queries"""
+    prompt: str = ""
     
-    User Query:
-    {query}
-    
-    Respond with a JSON object with the following structure:
-    {{
-        "isNewResearchRequired": true/false,
-        "responseToUser": "only include this if you feel a legal response is NOT needed. If legal response is needed, we will pass this query to a large Legal AI model"
-    }}
-    
-    If this is a legal query requiring new research, set isNewResearchRequired to true and don't include responseToUser.
-    If this is NOT a legal query OR can be answered from existing context, set isNewResearchRequired to false and include an appropriate responseToUser.
-     """
+    if any(greeting in query for greeting in ["hi", "hello", "hey"]):
+        print(f"the greeting prompt is .. {_greeting_prompt(query)}")
+        prompt = _greeting_prompt(query)
+    else:
+        print(f"the short prompt is .. {_greeting_prompt(query)}")
+
+        prompt = _short_query_prompt(query)
     
     response = gemini.generate_content(prompt)
-    result_text = response.text.strip()
-    
+    return _parse_response(response.text)
+
+
+
+def evaluate_legal_research_need(query: str, context: str) -> dict:
+    """Determine if legal research API call is needed"""
+    research_prompt = legal_research_prompt(context, query)
+    print(f"the research prompt is .. {research_prompt}")
+
+    response = gemini.generate_content(research_prompt)
+    return _parse_response(response.text)
+
+def _parse_response(response_text: str) -> dict:
+    """Safely parse LLM response with fallbacks"""
     try:
-        # Try to parse the response as JSON
-
-        logger.info(f"the response is .. {result_text}")
-        sanitized_json_text = sanitize_to_raw_json(result_text)
-        logger.info(f"the sanitized json is .. {sanitized_json_text}")
-        result = json.loads(sanitized_json_text)
-        logger.info(f"Research decision: {result}")
-        return result
+        sanitized = sanitize_to_raw_json(response_text.strip())
+        return json.loads(sanitized)
     except json.JSONDecodeError:
-        # If JSON parsing fails, check for explicit mentions of research needed
-        if "true" in result_text.lower():
-            return {"isNewResearchRequired": True}
-        else:
-            # Generate a fallback response
-            return {
-                "isNewResearchRequired": False,
-                "responseToUser": "I understand your question. Based on our conversation so far, I can provide some insights without additional research."
-            }
-
+        logger.error(f"Failed to parse response: {response_text}")
+        return {
+            "isNewResearchRequired": False,
+            "responseToUser": "Please rephrase your legal query for better analysis."
+        }
+    
+    
 def update_summary_context(previous_context, query, response=None, new_cases=None):
-    """Generate an updated summary context that includes the assistant's response. """
-    # Base prompt with previous context and current query
-    base_prompt = f"""
-    Task: Update the legal context summary
+    """Generate updated legal context summary with conversation history and case tracking"""
+    # Build components using helper methods
+    components = [
+        _build_previous_context_section(previous_context),
+        _build_current_query_section(query),
+        _build_response_section(response),
+        _build_new_cases_section(new_cases)
+    ]
     
-    Previous Context Summary:
-    {previous_context}
+    # Construct full prompt from template
+    template = _summary_prompt_template()  # Explicitly reference the function
+    filtered_components = [c for c in components if c]
     
-    Current Query:
-    {query}
-    """
+    full_prompt = template.format(
+        components="\n\n".join(filtered_components),
+        case_count=len(new_cases) if new_cases else 0
+    )
+    print(f"the full prompt is .. {full_prompt}")
+
     
-    # Add response information if available
-    if response:
-        base_prompt += f"""
-    Assistant's Response Summary:
-    {response}  # Limit to avoid token limits
-    """
+    # Generate and validate summary
+    summary = _generate_and_validate_summary(full_prompt)
+    return summary
+
+# Helper functions ------------------------------------------------------------
+
+
+def _build_previous_context_section(context):
+    if not context:
+        return "Initial Context: New legal analysis session"
+    return f"Previous Legal Context:\n{context}"
+
+def _build_current_query_section(query):
+    return f"Current Legal Query:\n{query}"
+
+def _build_response_section(response):
+    if not response:
+        return ""
+    return f"Previous Analysis Summary:\n{_truncate_response(response)}"
+
+def _build_new_cases_section(cases):
+    if not cases:
+        return ""
     
-    # Add new cases if available
-    if new_cases:
-        case_summaries = "\n".join([f"- {c['title']}: {c['summary']}" for c in new_cases[:3]])
-        base_prompt += f"""
-    New Cases:
-    {case_summaries}
-    """
+    return "New Case References:\n" + "\n".join(
+        f"{idx+1}. {c.get('title', 'Untitled Case')} "
+        f"({c.get('year', 'Year unknown')}): "
+        f"{c.get('key_holding', 'No holding available')}"
+        for idx, c in enumerate(cases[:3])
+    )
+
+
+def _truncate_response(response, max_words=75):
+    words = response.split()[:max_words]
+    return ' '.join(words) + ('...' if len(words) == max_words else '')
+
+def _generate_and_validate_summary(prompt):
+    response = gemini.generate_content(prompt)
+    summary = response.text.strip()
     
-    # Complete the prompt
-    base_prompt += """
-    Provide a concise sentence summary that combines all the above information into a coherent context summary for future reference.
-    Include the cases that have been cited in the assistant's response summary so that we don't end up citing the same cases.
-    This summary will be used to provide context for future legal queries for any follow up questions
-    Limit your response to 600 characters maximum.
-    """
+    # Validation checks
+    if len(summary) > 1000:
+        summary = summary[:997] + "..."
+    if not any(char in summary for char in [':', ';', '.']):
+        summary = _convert_to_structured_summary(summary)
     
-    response = gemini.generate_content(base_prompt)
-    new_summary = response.text.strip()
-    
-    # Ensure summary doesn't exceed reasonable length
-    if len(new_summary) > 1000:
-        new_summary = new_summary[:997] + "..."
-        
-    return new_summary
+    return summary
+
+def _convert_to_structured_summary(text):
+    """Fallback structure for poorly formatted summaries"""
+    sentences = text.split('.')[:3]
+    return "\n".join(
+        f"{idx+1}. {s.strip()}" 
+        for idx, s in enumerate(sentences) 
+        if s.strip()
+    )
+
+
+def get_historical_conversation(chat_id):
+    try:
+        return convex.query(
+            "messages:historicalUserMessages",
+            {"chatId": chat_id}  # Changed from "id" to "chatId"
+        ) or []
+    except Exception as e:
+        print(f"Error fetching conversation: {str(e)}")
+        return []
 
 def handle_query(chat_id, query):
     """Main function to handle a legal query with optimized storage"""
     # Fetch context from Convex
 
     print(f"the chat id is .. {chat_id}")
+    print(f"the user query is .. {query}")
 
     print(f"querying convex")
 
@@ -395,6 +391,7 @@ def handle_query(chat_id, query):
     
     # Check if API call needed and potentially get immediate response
     research_result = needs_api_call_with_response(query, summary_context)
+    print(f"the research result is .. {research_result}")
     
     # If we already have a response, return it directly
     if not research_result.get("isNewResearchRequired", True) and "responseToUser" in research_result:
@@ -432,34 +429,19 @@ def handle_query(chat_id, query):
     case_text = ""
 
     case_titles = set()
+    
     for case in new_cases:
         case_text += f"CASE: {case['title']} ({case['court']}, {case['year']})\n"
         case_text += f"CASE DETAILS: {case['doc_text']}\n\n"
         case_titles.add(case['title'])
+
     
+    historical_conversartion = get_historical_conversation(chat_id);
+    print(f"calling big AI")
     # Generate response
-    prompt = f"""
-    You are an AI legal assistant specializing in Indian law who is advising senior lawyers.
-    Empasize on the knowledge base to address the user query.
-    This could be a continued conversation so CONTEXT SUMMARY will give you the context of the conversation.
-    If context is empty, it is a new conversation.
-    Analyze like a high level attorney Give your advice in a clear and concise manner in 1000 words or less.
+    prompt = get_final_legal_query_resolver_prompt(summary_context, case_text, query, historical_conversartion)
     
-    CONTEXT SUMMARY: 
-    {summary_context}
-    
-    KNOWLEDGE BASE:
-    {case_text}
-    
-    USER QUERY: 
-    {query}
-    
-    Provide a comprehensive legal analysis addressing the query, citing relevant cases. 
-    Be specific with your references to cases and legal principles. 
-    Format your answer clearly with appropriate sections and explain any legal terms for a non-expert.
-    If cases are present in the knowledge base which is being sent to you, make use of them if necessary to user's query
-    """
-    
+    print(f"the finql prompt is .. {prompt}")
     response = gemini.generate_content(prompt)
     answer = response.text.strip()
     
@@ -476,6 +458,7 @@ def handle_query(chat_id, query):
     
     
     logger.info(f"the chat id is .. {chat_id}")
+
     convex.mutation("chats:updateChat", {
         "id": chat_id,
         "summary_context": summary_context,

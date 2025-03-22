@@ -72,6 +72,9 @@ def get_case_titles_from_google(query, max_results) -> set:
 
         caseDocs = set();
 
+        if not results.get('items'):
+            logger.info("No items found in the response.")
+            return set()
         for item in results['items']:
             docid = extract_docid(item['link'])
             if docid:
