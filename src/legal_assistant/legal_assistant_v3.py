@@ -7,29 +7,26 @@ from sentence_transformers import SentenceTransformer
 import google.generativeai as genai
 from scipy.spatial.distance import cosine
 from dotenv import load_dotenv
+
+from src.legal_assistant.centralized_logger import CentralizedLogger
+from src.legal_assistant.open_router import OpenRouterLegalAssistant
+from src.legal_assistant.similarity.rank_similarity import get_cosine_similarity_score
 from .search_google import get_case_titles_from_google
 from .sanitize_json import sanitize_to_raw_json
-from .prompts.prompts_legal import _doc_summary_prompt, _short_query_prompt, _summary_prompt_template, get_search_query_prompt, legal_research_prompt
+from .prompts.prompts_legal import _doc_summary_prompt, _short_query_prompt, _summary_prompt_template, get_search_prompt_system, get_search_prompt_user, get_search_query_prompt, get_system_prompt2, legal_research_prompt
 from .prompts.prompts_legal import get_final_legal_query_resolver_prompt
 from .prompts.prompts_legal import _greeting_prompt
+from .utils.clean_html import clean_legal_html
+from .prompts.prompts_legal import get_system_prompt
 
-import logging
 
 # Load environment file from the same package
 load_dotenv()
 
-log_dir = os.path.expanduser("~/log")
-os.makedirs(log_dir, exist_ok=True)
-log_file = os.path.join(log_dir, "legal_assistant.log")
 
+openrouter = OpenRouterLegalAssistant()
 
-logging.basicConfig(
-    filename=log_file,
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-
-logger = logging.getLogger(__name__)
+logger = CentralizedLogger().get_logger()
 
 # Initialize clients - updated Convex initialization
 convex_url = os.getenv("CONVEX_URL")
@@ -63,7 +60,7 @@ MAX_STORED_CASES = 10
 # Maximum length of summary for each case
 MAX_SUMMARY_LENGTH = 500
 # Maximum search results 
-MAX_SEARCH_RESULTS_FROM_KANOON = 5
+MAX_SEARCH_RESULTS_FROM_KANOON = 50
 
 def create_chat_session():
     """Create a new chat session and return its ID"""
@@ -95,34 +92,32 @@ def generate_case_summary(query, full_text, title, max_length=MAX_SUMMARY_LENGTH
 
 def prepare_search_query(user_query, summary_context):
     """Generate optimized search parameters for Indian Kanoon based on user query and context"""
-    prompt = get_search_query_prompt(user_query, summary_context)
+   # prompt = get_search_query_prompt(user_query, summary_context)
+    full_ai_message = generate_search_query_full_prompt(user_query, summary_context)
     
     try:
-        response = gemini.generate_content(prompt)
-        search_query = response.text.strip()
-        logger.info(f"Generated search query: {search_query}")
+        response = openRouterResponse(full_ai_message)
+        #response = gemini.generate_content(prompt)
+        search_query = response
         return search_query
     except Exception as e:
         logger.info(f"Error generating search query: {e}")
         # Fallback to original query if there's an error
         return user_query
 
-def search_indian_kanoon(query, summary_context, pagenum=0, max_results=MAX_SEARCH_RESULTS_FROM_KANOON):
+def search_indian_kanoon(optimized_query, original_query, pagenum=0, max_results=MAX_SEARCH_RESULTS_FROM_KANOON):
     """Search Indian Kanoon API for relevant cases with optimized storage"""
-    # Generate optimized search query
-    optimized_query = prepare_search_query(query, summary_context)
-    
+    logger.info(f"the optimized query is .. {optimized_query}")
+
     headers = {
         "Authorization": f"Token {INDIAN_KANOON_API_KEY}"
     }
 
     #remove double quotes from start and end if they exist
-    optimized_query = optimized_query[1:-1]
+    #optimized_query = optimized_query[1:-1]
     
-    logger.info(f"optimized query to be sent to search : {optimized_query}")
-
     cases = []
-    caseDocs : set = get_case_titles_from_google(optimized_query, max_results)
+    caseDocs : set = get_case_titles_from_google(optimized_query, original_query, max_results)
     # Convert set to list to allow indexing
     caseDocs_list = list(caseDocs)
 
@@ -139,7 +134,10 @@ def search_indian_kanoon(query, summary_context, pagenum=0, max_results=MAX_SEAR
             meta = meta_response.json()
             
             # Extract document text
-            doc_text = meta.get("doc", "")
+            doc_text_html = meta.get("doc", "")
+            doc_text = clean_legal_html(doc_text_html)
+            logger.info("cleaned doc is ..")
+            logger.info(doc_text)
             
             # Generate a concise summary instead of storing full text
             title = meta.get("title", "Untitled Case")
@@ -156,6 +154,7 @@ def search_indian_kanoon(query, summary_context, pagenum=0, max_results=MAX_SEAR
             citations = meta.get("citations", [])
             if not isinstance(citations, list):
                 citations = [str(citations)]
+                
             
             # Store only essential metadata and the summary
             case = {
@@ -251,10 +250,10 @@ def handle_non_legal_query(query: str) -> dict:
     prompt: str = ""
     
     if any(greeting in query for greeting in ["hi", "hello", "hey"]):
-        print(f"the greeting prompt is .. {_greeting_prompt(query)}")
+        logger.info(f"the greeting prompt is .. {_greeting_prompt(query)}")
         prompt = _greeting_prompt(query)
     else:
-        print(f"the short prompt is .. {_greeting_prompt(query)}")
+        logger.info(f"the short prompt is .. {_greeting_prompt(query)}")
 
         prompt = _short_query_prompt(query)
     
@@ -266,7 +265,7 @@ def handle_non_legal_query(query: str) -> dict:
 def evaluate_legal_research_need(query: str, context: str) -> dict:
     """Determine if legal research API call is needed"""
     research_prompt = legal_research_prompt(context, query)
-    print(f"the research prompt is .. {research_prompt}")
+    logger.info(f"the research prompt is .. {research_prompt}")
 
     response = gemini.generate_content(research_prompt)
     return _parse_response(response.text)
@@ -302,7 +301,7 @@ def update_summary_context(previous_context, query, response=None, new_cases=Non
         components="\n\n".join(filtered_components),
         case_count=len(new_cases) if new_cases else 0
     )
-    print(f"the full prompt is .. {full_prompt}")
+    logger.info(f"the full prompt is .. {full_prompt}")
 
     
     # Generate and validate summary
@@ -370,28 +369,23 @@ def get_historical_conversation(chat_id):
             {"chatId": chat_id}  # Changed from "id" to "chatId"
         ) or []
     except Exception as e:
-        print(f"Error fetching conversation: {str(e)}")
+        logger.info(f"Error fetching conversation: {str(e)}")
         return []
 
 def handle_query(chat_id, query):
     """Main function to handle a legal query with optimized storage"""
     # Fetch context from Convex
 
-    print(f"the chat id is .. {chat_id}")
-    print(f"the user query is .. {query}")
-
-    print(f"querying convex")
-
+    logger.info(f"the chat id is .. {chat_id}")
     ctx = convex.query("chats:get", {"id": chat_id}) or {}
 
-    print(f"after querying convex")
     summary_context = ctx.get("summary_context", "")
     retrieved_cases = ctx.get("retrieved_cases", "")
     conversation = ctx.get("conversation", [])
     
     # Check if API call needed and potentially get immediate response
     research_result = needs_api_call_with_response(query, summary_context)
-    print(f"the research result is .. {research_result}")
+    logger.info(f"the research result is .. {research_result}")
     
     # If we already have a response, return it directly
     if not research_result.get("isNewResearchRequired", True) and "responseToUser" in research_result:
@@ -406,9 +400,12 @@ def handle_query(chat_id, query):
         return answer
     
     # Check if API call needed
+    optimized_query = None
     new_cases = []
     if research_result.get("isNewResearchRequired", True):
-        new_cases = search_indian_kanoon(query, summary_context)
+        # Generate optimized search query
+        optimized_query = prepare_search_query(query, summary_context)
+        new_cases = search_indian_kanoon(optimized_query, query)
         
         #if new_cases:
             # Add new cases to retrieved_cases
@@ -428,6 +425,7 @@ def handle_query(chat_id, query):
     # Prepare relevant case text for context
     case_text = ""
 
+    
     case_titles = set()
     
     for case in new_cases:
@@ -437,13 +435,15 @@ def handle_query(chat_id, query):
 
     
     historical_conversartion = get_historical_conversation(chat_id);
-    print(f"calling big AI")
+    logger.info(f"calling big AI")
     # Generate response
     prompt = get_final_legal_query_resolver_prompt(summary_context, case_text, query, historical_conversartion)
     
-    print(f"the finql prompt is .. {prompt}")
-    response = gemini.generate_content(prompt)
-    answer = response.text.strip()
+    full_ai_message =  generate_ai_legal_full_prompt(prompt)
+
+    response = openRouterResponse(full_ai_message)
+
+    answer = response
     
     # Convert case_titles set to a string
     case_titles_str = "; ".join(case_titles)
@@ -459,14 +459,65 @@ def handle_query(chat_id, query):
     
     logger.info(f"the chat id is .. {chat_id}")
 
+    
     convex.mutation("chats:updateChat", {
         "id": chat_id,
         "summary_context": summary_context,
         "retrieved_cases": case_titles_str,
     })
     
-    logger.info(f"the final answer is -> {answer}")
 
+    return answer
+
+
+def generate_ai_legal_full_prompt(prompt):
+    system_message = {
+        "role": "system", 
+        "content": get_system_prompt2()
+    }
+    
+    user_message = {
+        "role": "user",
+        "content": prompt
+    }
+    
+    messages = [system_message, user_message]
+    return messages
+
+def generate_search_query_full_prompt(user_query, summary_context):
+    system_message = {
+        "role": "system", 
+        "content": get_search_prompt_system()
+    }
+    
+    user_message = {
+        "role": "user",
+        "content": get_search_prompt_user(user_query, summary_context)
+    }
+    
+    messages = [system_message, user_message]
+    return messages
+
+
+
+
+def openRouterResponse(full_ai_message): 
+    
+    # Get OpenRouter response
+    response = openrouter.generate_response(
+        messages=full_ai_message,
+        temperature=0.2,
+        max_tokens=10000
+    )
+    
+    if response and 'choices' in response:
+        answer = response['choices'][0]['message']['content'].strip()
+    else:
+        # Fallback to Gemini if OpenRouter fails
+        logger.error("OpenRouter failed, falling back to Gemini")
+        response = gemini.generate_content(full_ai_message)
+        answer = response.text.strip()
+    
     return answer
 
 if __name__ == "__main__":

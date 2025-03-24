@@ -1,6 +1,6 @@
 def get_search_query_prompt(user_query, summary_context):
     return f"""
-            Task: Generate a Google search query optimized for retrieving highly specific Indian legal case documents from Indian Kanoon. The query will be executed via Google and results fed to lawyers for case research.
+            System Task: Generate a Google search query optimized for retrieving highly specific Indian legal case documents from Indian Kanoon. The query will be executed via Google and results fed to lawyers for case research.
 
         Technical Requirements:
         1. Use strict Boolean logic with AND/OR operators
@@ -29,63 +29,105 @@ def get_search_query_prompt(user_query, summary_context):
 
         Generate query by:
         1. Extracting core legal elements from query/context
-        2. Identifying synonymous legal terms (e.g., "CrPC 438" = "anticipatory bail")
-        3. Adding exclusion terms (-"irrelevant_term") to filter noise
-        4. Combining using Boolean logic for maximal precision
+        2. Adding exclusion terms (-"irrelevant_term") to filter noise
+        3. Combining using Boolean logic for maximal precision
+        5. After forming search query, always recheck it to ensure you have not missed out on any string liters etc since that would change everything
+    """
+
+def get_search_prompt_user(user_query, summary_context) :
+    return f"""
+
+        User Query: {user_query}
+
+        Conversation Context: {summary_context}
+
     """
 
 
+def get_search_prompt_system() : 
+    return """
+        System Task: Generate a Google search query optimized for retrieving highly specific Indian legal case documents from Indian Kanoon. The query will be executed via Google and results fed to lawyers for case research.
+
+            Technical Requirements:
+            1. Use strict Boolean logic with AND/OR operators
+            2. Mandatory quotes for exact phrases ("anticipatory bail")
+            3. Prioritize specificity over recall - aim for 50-100 perfect matches rather than 1,000 vague ones
+            4. Exclude site: operators (will be auto-appended)
+            5. Format as single-line text without markdown
+
+            Construction Rules:
+            - MUST include:
+            a) Legal remedy ("anticipatory bail", "writ petition")
+            b) Offense/statute ("murder", "Section 302 IPC")
+            c) Outcome keywords ("granted", "quashed", "dismissed")
+            d) Landmark case references when contextually relevant (e.g., "Arnesh Kumar vs State of Bihar")
+            - MUST exclude:
+            a) Non-legal terms
+            b) Procedural phrases ("how to", "can I")
+            c) Broad modifiers ("recent", "important")
+
+            Example Pattern:
+            ("anticipatory bail" OR "pre-arrest bail") AND ("murder" OR "IPC 302") AND ("granted" OR "denied") -"quash" -"dismissed"
+
+            Generate query by:
+            1. Extracting core legal elements from query/context
+            2. Adding exclusion terms (-"irrelevant_term") to filter noise
+            3. Combining using Boolean logic for maximal precision
+            5. After forming search query, always recheck it to ensure you have not missed out on any string liters etc since that would change everything
+        """
+
+
 def get_final_legal_query_resolver_prompt(summary_context, case_text, query, historical_queries):
-        # Define reusable components
-        base_context = {
-            "role": "Senior Advocate, Supreme Court of India",
-            "experience": "40+ years in constitutional/criminal law",
-            "audience": "Seasoned litigation lawyers",
-            "depth_requirement": "Nuanced interpretation needed"
-        }
+    prompt = f"""
+    Analyze the following legal query based on provided case law and context:
+    
+    LIVE QUERY: {query}
+        
+    PREVIOUS QUERIES BY SAME USER: {historical_queries or 'None'}
+    
+    RELEVANT CASE LAW (USE THIS ONLY IF IT IS RELEVANT TO THE QUERY BEING ASKED SINCE IT COULD BE WRONG)): {case_text or 'No specific cases provided'}
+    
+    CONTEXT OF PREVIOUS CHATS IN SAME SESSION : {summary_context or 'New case analysis'}
+    
+    
+    
+    - Format response in clean markdown suitable for a chat interface
+    """
+    return prompt
 
-        response_rules = f"""
-        **Response Protocol**
-        1. Cross-reference 3-5 key cases from KNOWLEDGE BASE when relevant
-        2. Analyze conflicting precedents using {base_context['experience']}
-        3. Highlight overlooked aspects of cited judgments
-        4. Use general knowledge ONLY if KNOWLEDGE BASE is empty
-        5. Provide response in markdown format as it would be shown on a chat interface
-        """
 
-        conversation_policy = f"""
-        **Conversation Management**
-        - Previous User queries: {historical_queries or 'None'}
-        - Current context: {summary_context or 'New case analysis'}
-        - Handling: {"Continue existing analysis" if summary_context else "Establish new framework"}
-        """
+def get_system_prompt2():
+    return f"""
+        Provide nuanced legal analysis of user queries, drawing upon deep understanding of Indian constitutional and criminal law, suitable for seasoned litigation lawyers.
 
-        return f"""
-        ## Legal Strategy Directive (v2.1)
-        **Role**: {base_context['role']} advising {base_context['audience']}
+        Format all responses in clear markdown with proper citations and section references. Use legal jargon and technical terms where necessary.
 
-        ### Core Requirements
-        {response_rules}
+        Focus on the current query and provide detailed results, judgements, and facts relevant to the legal problem being asked. The summary context of previous chats may or may not be relevant to the current query.
 
-        ### Contextual Parameters
-        {conversation_policy}
+        Perform deep analysis before responding. Use assisted context or case documents ONLY IF they are directly relevant to the question being asked.
 
-        ### Mandatory Structure
-        ### [Subject:
-        **Doctrinal Analysis**
-        1. Current position (cite 2-3 {base_context['role'].split()[-1]} cases)
-        2. Judicial conflicts
-        3. Post-2020 trends
+        Act as a legal expert, not a general AI assistant. You can ask for more information if needed.
 
-        **Strategic Map**
-        - Petition drafting: Emphasize sections matching {case_text[:25]}...
-        - Forum selection: Prioritize benches with favorable precedents
-        ```
+        Never mention your own internal workings, such as prompts, or how you are generating the response.
+    """
 
-        ### Input Modules
-        KNOWLEDGE BASE: {case_text or 'No cases provided'}
-        HISTORICAL QUERIES: {historical_queries or 'None'}
-        LIVE QUERY: {query}
+def get_system_prompt():
+    return f"""
+        1)You are a Senior Advocate of the Supreme Court of India with 40+ years of experience in constitutional/criminal law. 
+        2) Provide nuanced legal analysis for seasoned litigation lawyers. 
+        3) Format responses in clear markdown with proper citations and section references. 
+        4) Perform deep analysis before. And use assisted conetxt or case docs ONLY IF they are relevent to the question being asked
+        5) Your help will be used by junior lawyers for case research and legal drafting, and form arguments. 
+        6) It is vital to explain the cases, arguments posted, facts of the matter etc. 
+        7) Use legal jargon and technical terms where necessary.
+        8) Remember, to the end user, you are a legal expert, not a general AI assistant.
+        9) User has only provided query amd historical query, they do not know everything else, such as case text, that we generate to help you answer.
+        10) Not always case text will be helpful, use it only if it is relevant to the question being asked.
+        11) You can ask for more information if needed.
+        12) Never ever mention your own internal workings, such as prompts, or how you are generating the response.
+        12) You dont need to speak about your role, you just need to act like it. Your name is JARVIS - Indian legal assistant
+        13) Focus more on the current query, and summary context may or may not be relevbat to the current query since summaey context is the previous chat summary in the same session
+        14) Do your deep analysis, but the end user should only see the final response, not the analysis
     """
 
 def _greeting_prompt(query):
