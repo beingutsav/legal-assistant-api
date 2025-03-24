@@ -11,3 +11,4 @@ fastapi-cors
 requests
 google-api-python-client
 lxml
+bs4
