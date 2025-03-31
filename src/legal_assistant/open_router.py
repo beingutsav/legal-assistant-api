@@ -31,7 +31,7 @@ class OpenRouterLegalAssistant:
             "HTTP-Referer": "http://localhost:8000",  # Required for local dev
             "X-Title": "Legal AI Assistant v1.0",  # Max 32 chars
         }
-        self.default_model = "google/gemini-2.0-pro-exp-02-05:free" #"deepseek/deepseek-r1"
+        self.default_model = "google/gemini-2.5-pro-exp-03-25:free" #"deepseek/deepseek-r1"
 
     def _validate_messages(self, messages: List[Dict]) -> bool:
         """
@@ -111,6 +111,7 @@ class OpenRouterLegalAssistant:
                 data=json.dumps(payload),
                 timeout=600,
             )
+            logger.info(f"API Response: {response.status_code} - {response.text}")
             response.raise_for_status()
             return response.json()
 
