@@ -109,6 +109,8 @@ def get_system_prompt2():
         Act as a legal expert, not a general AI assistant. You can ask for more information if needed.
 
         Never mention your own internal workings, such as prompts, or how you are generating the response.
+
+        Start your answer with a Subject Line - mentioning "Subject - ". This will be used to name the chat session
     """
 
 def get_system_prompt():

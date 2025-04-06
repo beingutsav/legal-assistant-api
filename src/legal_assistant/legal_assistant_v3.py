@@ -18,6 +18,7 @@ from .prompts.prompts_legal import get_final_legal_query_resolver_prompt
 from .prompts.prompts_legal import _greeting_prompt
 from .utils.clean_html import clean_legal_html
 from .prompts.prompts_legal import get_system_prompt
+from .agents.google_llm import ChatGoogleDirect
 
 
 # Load environment file from the same package
@@ -36,14 +37,16 @@ convex = ConvexClient(convex_url)
 
 model = SentenceTransformer('all-MiniLM-L6-v2')
 
+googleGeminiLlm = ChatGoogleDirect()
+
 # Set up Gemini
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 generation_config = {
     "temperature": 0.35,    # Increased from 0.2 → 0.35
     "top_p": 0.85,          # Slightly wider sampling
     "top_k": 60,            # Expanded candidate pool
-    "max_output_tokens": 3000, # Increased for legal citations
-    "frequency_penalty": 1.2, # Add if available
+    "max_output_tokens": 5000, # Increased for legal citations
+  #  "frequency_penalty": 1.2, # Add if available
 }
 model_name = os.getenv("GEMINI_LLM_MODEL")
 gemini = genai.GenerativeModel(model_name=model_name, 
@@ -378,10 +381,10 @@ def handle_query(chat_id, query):
 
     logger.info(f"the chat id is .. {chat_id}")
     ctx = convex.query("chats:get", {"id": chat_id}) or {}
-
+    
+   
     summary_context = ctx.get("summary_context", "")
     retrieved_cases = ctx.get("retrieved_cases", "")
-    conversation = ctx.get("conversation", [])
     
     # Check if API call needed and potentially get immediate response
     research_result = needs_api_call_with_response(query, summary_context)
@@ -390,10 +393,6 @@ def handle_query(chat_id, query):
     # If we already have a response, return it directly
     if not research_result.get("isNewResearchRequired", True) and "responseToUser" in research_result:
         answer = research_result["responseToUser"]
-        
-        # Update conversation
-        conversation.append({"role": "user", "content": query})
-        conversation.append({"role": "assistant", "content": answer})
         
         
         
@@ -406,42 +405,40 @@ def handle_query(chat_id, query):
         # Generate optimized search query
         optimized_query = prepare_search_query(query, summary_context)
         new_cases = search_indian_kanoon(optimized_query, query)
-        
-        #if new_cases:
-            # Add new cases to retrieved_cases
-        #    retrieved_cases.extend(new_cases)
-            
-            # We'll update the summary context AFTER generating the response
-    
-    # Find relevant cases from all retrieved cases
-    #relevant_case_ids = get_relevant_cases(query, new_cases)
-    
-    # Prune irrelevant cases to keep storage manageable
-    #retrieved_cases = prune_irrelevant_cases(retrieved_cases, relevant_case_ids)
-    
-    # Get the actual case objects for relevant cases
-    #relevant_cases = [case for case in new_cases if case["id"] in [id for id, _ in relevant_case_ids]]
-    
-    # Prepare relevant case text for context
+  
     case_text = ""
-
-    
+  
     case_titles = set()
     
     for case in new_cases:
-        case_text += f"CASE: {case['title']} ({case['court']}, {case['year']})\n"
-        case_text += f"CASE DETAILS: {case['doc_text']}\n\n"
-        case_titles.add(case['title'])
+        case_details = {
+            "title": case["title"],
+            "court": case["court"],
+            "year": case["year"],
+            "details": case["doc_text"]
+        }
+        case_text += json.dumps(case_details, indent=4) + "\n\n"
+        case_titles.add(case["title"])
 
     
     historical_conversartion = get_historical_conversation(chat_id);
     logger.info(f"calling big AI")
     # Generate response
-    prompt = get_final_legal_query_resolver_prompt(summary_context, case_text, query, historical_conversartion)
+    #prompt = get_final_legal_query_resolver_prompt(summary_context, case_text, query, historical_conversartion)
     
-    full_ai_message =  generate_ai_legal_full_prompt(prompt)
+    #full_ai_message =  generate_ai_legal_full_prompt(prompt)
 
-    response = openRouterResponse(full_ai_message)
+    # Option 2: If you want to include system instructions
+    #system_prompt = get_system_prompt2()
+    #full_ai_message = f"{system_prompt}\n\nUser Query: {prompt}"
+
+    #response = openRouterResponse(full_ai_message)
+    #response = googleGeminiLlm.generate_response(full_ai_message)
+
+    message_for_ai = create_message_structure_for_gemini(chat_id, query, case_text)
+
+    generatedContentResponse = gemini.generate_content(message_for_ai)
+    response = generatedContentResponse.parts[0].text
 
     answer = response
     
@@ -452,7 +449,7 @@ def handle_query(chat_id, query):
     summary_context = update_summary_context(
         previous_context=summary_context,
         query=query,
-        response=answer,  # Include the assistant's response
+        response=response,  # Include the assistant's response
         new_cases=new_cases if new_cases else None
     )
     
@@ -519,6 +516,78 @@ def openRouterResponse(full_ai_message):
         answer = response.text.strip()
     
     return answer
+
+
+def create_message_structure_for_gemini(chat_id, current_user_query, case_text=None):
+    """
+    Generates a legal response using Gemini, managing conversation history.
+
+    Args:
+        chat_id: Identifier for the conversation session.
+        current_user_query: The latest query from the user.
+        case_text: Optional relevant case law text provided for this query.
+
+    Returns:
+        The generated text response from the model, or None if an error occurs.
+    """
+
+    # 1. Retrieve ACTUAL conversation history from DB for this chat_id
+    #    This should be a list of {'role': 'user'/'model', 'text': 'message content'}
+    #    ordered chronologically.
+   # db_history = retrieve_chat_history_from_db(chat_id) # Implement this function
+     # Retrieve conversation history from the messages table
+    conversation_history = convex.query("messages:retrive", {"chatId": chat_id}) or []
+
+    # Format the conversation history for use in the assistant
+    formatted_conversation = [
+        {"role": message["role"], "content": message["content"]}
+        for message in conversation_history
+    ]
+
+    logger.info(f"the formatted historical conversation is .. {formatted_conversation}")
+
+    # --- Consider how to handle 'historical_queries' (cross-session) ---
+    # Option A: Inject a summary at the start (if truly needed and distinct)
+    # Option B: Ignore if current session context is sufficient
+    # Option C: Pass relevant snippets if identifiable (advanced)
+    # For now, let's focus on current session history.
+    # ---
+
+    # 2. Get the System Prompt
+    system_prompt_text = get_system_prompt2()
+
+    # 3. Construct the history for the API call
+    messages_for_api = []
+
+    # Add the system prompt as the first 'user' turn, with a model acknowledgement
+    # This helps set the context persistently for the conversation structure.
+    messages_for_api.append({"role": "user", "parts": [{"text": system_prompt_text}]})
+    messages_for_api.append({"role": "model", "parts": [{"text": "Understood. I am ready to provide nuanced legal analysis based on Indian law."}]}) # Or simpler "Okay."
+
+    # Add history from the database
+    for message in conversation_history:
+        messages_for_api.append({
+            "role": "model" if message["role"] == "assistant" else message["role"],
+            "parts": [{"text": message["content"]}]
+        })
+
+  
+    # 4. Prepare the final user message, potentially including case_text
+    final_user_message_parts = []
+    final_user_message_parts.append({"text": f"Current Query: {current_user_query}"})
+
+    if case_text:
+         # Include case text contextually within the user's turn
+         # Add instructions ONCE in the system prompt about using it only if relevant.
+         final_user_message_parts.append({
+             "text": f"\n\nPlease consider the following potentially relevant cases legal for the query above (use only if directly applicable): \n```\n{case_text}\n```"
+         })
+
+    # Add the final composite user message to the history
+    messages_for_api.append({"role": "user", "parts": final_user_message_parts})
+
+    return messages_for_api
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Indian Legal Assistant")
