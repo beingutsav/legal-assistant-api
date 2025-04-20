@@ -1,3 +1,6 @@
+from typing import Any
+
+
 def get_search_query_prompt(user_query, summary_context):
     return f"""
             System Task: Generate a Google search query optimized for retrieving highly specific Indian legal case documents from Indian Kanoon. The query will be executed via Google and results fed to lawyers for case research.
@@ -170,10 +173,12 @@ def _short_query_prompt(query: str) -> str:
         }}"""
     
 
-def legal_research_prompt(context, query) -> dict:
+def legal_research_prompt(context, query, historical_conversation_str: str) -> dict:
+    
     return f'''
         Analyze if this legal query requires fresh research or can be answered from existing context:
         
+        Historical_Conversation: {historical_conversation_str}
         Context: {context}
         Query: {query}
         
@@ -185,7 +190,9 @@ def legal_research_prompt(context, query) -> dict:
         Decision Criteria:
         1. Needs research if query contains new legal questions not in context
         2. Needs research if asking for case references/statutes
-        3. No research needed if asking for explanation of previous analysis'''
+        3. No research needed if asking for explanation of previous analysis
+        4. Consider historical conversation to determine if the query has already been addressed
+    '''
 
 
 

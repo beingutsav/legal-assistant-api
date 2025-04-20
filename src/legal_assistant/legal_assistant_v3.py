@@ -1,6 +1,7 @@
 import os
 import json
 import argparse
+from typing import Any
 import requests
 from convex import ConvexClient
 from sentence_transformers import SentenceTransformer
@@ -221,7 +222,7 @@ def prune_irrelevant_cases(cases, relevant_case_ids, max_cases=MAX_STORED_CASES)
         
     return pruned_cases
 
-def needs_api_call_with_response(query, summary_context):
+def needs_api_call_with_response(query, summary_context, conversation_history):
     """Determine if new case research is needed and optionally generate a response"""
     query = query.strip().lower()
     
@@ -234,7 +235,7 @@ def needs_api_call_with_response(query, summary_context):
         return {"isNewResearchRequired": True}
     
     # Determine if legal research needed based on context
-    return evaluate_legal_research_need(query, summary_context)
+    return evaluate_legal_research_need(query, summary_context, conversation_history)
 
 # Helper functions below
 
@@ -265,9 +266,17 @@ def handle_non_legal_query(query: str) -> dict:
 
 
 
-def evaluate_legal_research_need(query: str, context: str) -> dict:
+def evaluate_legal_research_need(query: str, context: str, historical_conversations: list[Any]) -> dict:
     """Determine if legal research API call is needed"""
-    research_prompt = legal_research_prompt(context, query)
+
+    # Create a string representation of historical_conversations object
+    historical_conversations_str = "\n".join(
+        f"{message['role'].capitalize()}: {message['content']}" 
+        for message in historical_conversations
+    )
+    
+    # Generate the research prompt using the legal research prompt function
+    research_prompt = legal_research_prompt(context, query, historical_conversations_str)
     logger.info(f"the research prompt is .. {research_prompt}")
 
     response = gemini.generate_content(research_prompt)
@@ -382,20 +391,20 @@ def handle_query(chat_id, query):
     logger.info(f"the chat id is .. {chat_id}")
     ctx = convex.query("chats:get", {"id": chat_id}) or {}
     
-   
+    
     summary_context = ctx.get("summary_context", "")
-    retrieved_cases = ctx.get("retrieved_cases", "")
+    #retrieved_cases = ctx.get("retrieved_cases", "")
+    conversation_history = fetch_conversation_history(chat_id)
     
     # Check if API call needed and potentially get immediate response
-    research_result = needs_api_call_with_response(query, summary_context)
+    research_result = needs_api_call_with_response(query, summary_context, conversation_history)
     logger.info(f"the research result is .. {research_result}")
+
+    #historical_conversartion = get_historical_conversation(chat_id)
     
     # If we already have a response, return it directly
     if not research_result.get("isNewResearchRequired", True) and "responseToUser" in research_result:
         answer = research_result["responseToUser"]
-        
-        
-        
         return answer
     
     # Check if API call needed
@@ -421,21 +430,10 @@ def handle_query(chat_id, query):
         case_titles.add(case["title"])
 
     
-    historical_conversartion = get_historical_conversation(chat_id);
     logger.info(f"calling big AI")
-    # Generate response
-    #prompt = get_final_legal_query_resolver_prompt(summary_context, case_text, query, historical_conversartion)
-    
-    #full_ai_message =  generate_ai_legal_full_prompt(prompt)
 
-    # Option 2: If you want to include system instructions
-    #system_prompt = get_system_prompt2()
-    #full_ai_message = f"{system_prompt}\n\nUser Query: {prompt}"
-
-    #response = openRouterResponse(full_ai_message)
-    #response = googleGeminiLlm.generate_response(full_ai_message)
-
-    message_for_ai = create_message_structure_for_gemini(chat_id, query, case_text)
+    message_for_ai = create_message_structure_for_gemini(chat_id, query, conversation_history, case_text)
+    logger.info(f"message to be sent to big AI : {message_for_ai}")
 
     generatedContentResponse = gemini.generate_content(message_for_ai)
     response = generatedContentResponse.parts[0].text
@@ -466,6 +464,8 @@ def handle_query(chat_id, query):
 
     return answer
 
+
+#end main business method
 
 def generate_ai_legal_full_prompt(prompt):
     system_message = {
@@ -517,8 +517,14 @@ def openRouterResponse(full_ai_message):
     
     return answer
 
+def fetch_conversation_history(chat_id: str) -> list[Any] :
+    conversation_history = convex.query("messages:retrive", {"chatId": chat_id}) or []
+    
+    return conversation_history
 
-def create_message_structure_for_gemini(chat_id, current_user_query, case_text=None):
+
+
+def create_message_structure_for_gemini(chat_id, current_user_query, conversation_history, case_text=None):
     """
     Generates a legal response using Gemini, managing conversation history.
 
@@ -531,20 +537,6 @@ def create_message_structure_for_gemini(chat_id, current_user_query, case_text=N
         The generated text response from the model, or None if an error occurs.
     """
 
-    # 1. Retrieve ACTUAL conversation history from DB for this chat_id
-    #    This should be a list of {'role': 'user'/'model', 'text': 'message content'}
-    #    ordered chronologically.
-   # db_history = retrieve_chat_history_from_db(chat_id) # Implement this function
-     # Retrieve conversation history from the messages table
-    conversation_history = convex.query("messages:retrive", {"chatId": chat_id}) or []
-
-    # Format the conversation history for use in the assistant
-    formatted_conversation = [
-        {"role": message["role"], "content": message["content"]}
-        for message in conversation_history
-    ]
-
-    logger.info(f"the formatted historical conversation is .. {formatted_conversation}")
 
     # --- Consider how to handle 'historical_queries' (cross-session) ---
     # Option A: Inject a summary at the start (if truly needed and distinct)
