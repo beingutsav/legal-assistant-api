@@ -44,4 +44,4 @@ async def query_legal_assistant(request: QueryRequest):
 
 @app.get("/health", status_code=200)
 async def health_check():
-    return {"status": "healthy", "version": "3.2"}
+    return {"status": "healthy", "version": "3.5"}
