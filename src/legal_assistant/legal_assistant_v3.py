@@ -64,7 +64,7 @@ MAX_STORED_CASES = 10
 # Maximum length of summary for each case
 MAX_SUMMARY_LENGTH = 500
 # Maximum search results 
-MAX_SEARCH_RESULTS_FROM_KANOON = 50
+MAX_SEARCH_RESULTS_FROM_KANOON = 2
 
 def create_chat_session():
     """Create a new chat session and return its ID"""
@@ -97,10 +97,16 @@ def generate_case_summary(query, full_text, title, max_length=MAX_SUMMARY_LENGTH
 def prepare_search_query(user_query, summary_context):
     """Generate optimized search parameters for Indian Kanoon based on user query and context"""
    # prompt = get_search_query_prompt(user_query, summary_context)
-    full_ai_message = generate_search_query_full_prompt(user_query, summary_context)
-    
+    full_ai_message = generate_search_query_full_prompt_gemini(user_query, summary_context)
+    logger.info(f"Message sent to Gemini/OpenRouter for search optimization: {full_ai_message}")  # <-- Add this line
+
     try:
-        response = openRouterResponse(full_ai_message)
+        generatedContentResponse = gemini.generate_content(full_ai_message)
+        response = generatedContentResponse.parts[0].text
+        
+        #response = openRouterResponse(full_ai_message)
+        logger.info(f"Message received from to Gemini/OpenRouter for search optimization: {response}")  # <-- Add this line
+
         #response = gemini.generate_content(prompt)
         search_query = response
         return search_query
@@ -494,6 +500,15 @@ def generate_search_query_full_prompt(user_query, summary_context):
     
     messages = [system_message, user_message]
     return messages
+
+
+def generate_search_query_full_prompt_gemini(user_query, summary_context):
+    system_prompt = get_search_prompt_system()
+    user_prompt = get_search_prompt_user(user_query, summary_context)
+    return [
+        {"role": "user", "parts": [{"text": system_prompt}]},
+        {"role": "user", "parts": [{"text": user_prompt}]}
+    ]
 
 
 

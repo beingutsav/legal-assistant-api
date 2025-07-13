@@ -2,7 +2,10 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from .legal_assistant import handle_query, create_chat_session
 from fastapi.middleware.cors import CORSMiddleware
+from src.legal_assistant.centralized_logger import CentralizedLogger
+import time
 
+logger = CentralizedLogger().get_logger()
 app = FastAPI()
 
 # Configure CORS
@@ -25,11 +28,15 @@ class QueryResponse(BaseModel):
 
 @app.post("/query", response_model=QueryResponse)
 async def query_legal_assistant(request: QueryRequest):
+    start_time = time.time()
     if not request.query:
         raise HTTPException(status_code=400, detail="Query is required")
     
     chat_id = request.chat_id or create_chat_session()
     response = handle_query(chat_id, request.query)
+    
+    time_taken = time.time() - start_time
+    logger.info(f"time taken for response : {time_taken}")
     
     return QueryResponse(chat_id=chat_id, response=response)
 
