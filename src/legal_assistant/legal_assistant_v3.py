@@ -397,6 +397,8 @@ def handle_query(chat_id, query):
     logger.info(f"the chat id is .. {chat_id}")
     ctx = convex.query("chats:get", {"id": chat_id}) or {}
     
+    # update chat status
+    update_chat_status(chat_id, "thinking")
     
     summary_context = ctx.get("summary_context", "")
     #retrieved_cases = ctx.get("retrieved_cases", "")
@@ -418,6 +420,7 @@ def handle_query(chat_id, query):
     new_cases = []
     if research_result.get("isNewResearchRequired", True):
         # Generate optimized search query
+        update_chat_status(chat_id, "preparing optimum search")
         optimized_query = prepare_search_query(query, summary_context)
         new_cases = search_indian_kanoon(optimized_query, query)
   
@@ -425,6 +428,8 @@ def handle_query(chat_id, query):
   
     case_titles = set()
     
+    update_chat_status(chat_id, "referencing cases from archive")
+
     for case in new_cases:
         case_details = {
             "title": case["title"],
@@ -440,6 +445,8 @@ def handle_query(chat_id, query):
 
     message_for_ai = create_message_structure_for_gemini(chat_id, query, conversation_history, case_text)
     logger.info(f"message to be sent to big AI : {message_for_ai}")
+
+    update_chat_status(chat_id, "reasoning and preparing response");
 
     generatedContentResponse = gemini.generate_content(message_for_ai)
     response = generatedContentResponse.parts[0].text
@@ -467,11 +474,18 @@ def handle_query(chat_id, query):
         "retrieved_cases": case_titles_str,
     })
     
+    update_chat_status(chat_id, "completed research")
 
     return answer
 
 
 #end main business method
+
+def update_chat_status(chat_id, status):
+    convex.mutation("chats:updateStatus", {
+        "id": chat_id,
+        "response_status": status,
+    })
 
 def generate_ai_legal_full_prompt(prompt):
     system_message = {
