@@ -25,6 +25,7 @@ class QueryRequest(BaseModel):
 class QueryResponse(BaseModel):
     chat_id: str
     response: str
+    optimized_search: str
 
 @app.post("/query", response_model=QueryResponse)
 async def query_legal_assistant(request: QueryRequest):
@@ -38,10 +39,11 @@ async def query_legal_assistant(request: QueryRequest):
     time_taken = time.time() - start_time
     logger.info(f"time taken for response : {time_taken}")
     
-    return QueryResponse(chat_id=chat_id, response=response)
+    optimized_search = response['optimized_search'] if response['optimized_search'] is not None else ''
+    return QueryResponse(chat_id=chat_id, response=response['answer'], optimized_search=optimized_search)
 
 
 
 @app.get("/health", status_code=200)
 async def health_check():
-    return {"status": "healthy", "version": "3.5"}
+    return {"status": "healthy", "version": "4.0"}

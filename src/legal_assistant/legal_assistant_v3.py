@@ -413,7 +413,7 @@ def handle_query(chat_id, query):
     # If we already have a response, return it directly
     if not research_result.get("isNewResearchRequired", True) and "responseToUser" in research_result:
         answer = research_result["responseToUser"]
-        return answer
+        return create_response(answer, None)
     
     # Check if API call needed
     optimized_query = None
@@ -476,10 +476,31 @@ def handle_query(chat_id, query):
     
     update_chat_status(chat_id, "completed research")
 
-    return answer
+    final_reponse = create_response(response, optimized_query)
+    logger.info(f"the final message being sent is : {final_reponse}")
+    return final_reponse
 
 
 #end main business method
+
+
+def create_response(answer, optimized_search):
+    """
+    Creates a JSON response with the answer and optimized search query.
+
+    Args:
+        answer (str): The response to the user's query.
+        optimized_search (str): The optimized search query.
+
+    Returns:
+        dict: A dictionary representing the JSON response.
+    """
+    response = {
+        "answer": answer,
+        "optimized_search": optimized_search
+    }
+    return response
+
 
 def update_chat_status(chat_id, status):
     convex.mutation("chats:updateStatus", {
