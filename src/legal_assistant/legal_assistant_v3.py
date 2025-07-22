@@ -290,19 +290,28 @@ def evaluate_legal_research_need(query: str, context: str, historical_conversati
     response = gemini.generate_content(research_prompt)
     return _parse_response(response.text)
 
-def _parse_response(response_text: str) -> dict:
+def _parse_response(response_text: str):
     """Safely parse LLM response with fallbacks"""
+    sanitized = sanitize_to_raw_json(response_text)
+    if sanitized is None:
+        logger.warning(f"Sanitizer returned None for input: {response_text}")
+        # Return a default dictionary indicating research is needed
+        return {
+            "isNewResearchRequired": True,
+            "reasoning": "Response was not a valid format.",
+            "responseToUser": None
+        }
     try:
-        sanitized = sanitize_to_raw_json(response_text.strip())
         return json.loads(sanitized)
     except json.JSONDecodeError:
-        logger.error(f"Failed to parse response: {response_text}")
+        logger.warning(f"Could not parse JSON from LLM response: {sanitized}")
+        # Fallback for non-JSON or poorly formatted responses
         return {
-            "isNewResearchRequired": False,
-            "responseToUser": "Please rephrase your legal query for better analysis."
+            "isNewResearchRequired": True,
+            "reasoning": "Response was not valid JSON, proceeding with research.",
+            "responseToUser": None
         }
-    
-    
+
 def update_summary_context(previous_context, query, response=None, new_cases=None):
     """Generate updated legal context summary with conversation history and case tracking"""
     # Build components using helper methods
@@ -413,7 +422,7 @@ def handle_query(chat_id, query):
     # If we already have a response, return it directly
     if not research_result.get("isNewResearchRequired", True) and "responseToUser" in research_result:
         answer = research_result["responseToUser"]
-        return create_response(answer, None)
+        return create_response(answer, None, [])
     
     # Check if API call needed
     optimized_query = None
