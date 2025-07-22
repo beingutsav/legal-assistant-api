@@ -12,12 +12,12 @@ from dotenv import load_dotenv
 from src.legal_assistant.centralized_logger import CentralizedLogger
 from src.legal_assistant.open_router import OpenRouterLegalAssistant
 from src.legal_assistant.similarity.rank_similarity import get_cosine_similarity_score
-from .search_google import get_case_titles_from_google
+from src.legal_assistant.status.AIStatus import AIStatus
+from .enhanced_search import get_enhanced_case_results
 from .sanitize_json import sanitize_to_raw_json
 from .prompts.prompts_legal import _doc_summary_prompt, _short_query_prompt, _summary_prompt_template, get_search_prompt_system, get_search_prompt_user, get_search_query_prompt, get_system_prompt2, legal_research_prompt
 from .prompts.prompts_legal import get_final_legal_query_resolver_prompt
 from .prompts.prompts_legal import _greeting_prompt
-from .utils.clean_html import clean_legal_html
 from .prompts.prompts_legal import get_system_prompt
 from .agents.google_llm import ChatGoogleDirect
 
@@ -64,7 +64,9 @@ MAX_STORED_CASES = 10
 # Maximum length of summary for each case
 MAX_SUMMARY_LENGTH = 500
 # Maximum search results 
-MAX_SEARCH_RESULTS_FROM_KANOON = 2
+MAX_SEARCH_PAGES = 50 # Increased from 2
+MAX_CONTENT_FETCH = 12
+MAX_PER_DOMAIN=3
 
 def create_chat_session():
     """Create a new chat session and return its ID"""
@@ -72,7 +74,7 @@ def create_chat_session():
     convex.mutation("chats:insert", {
         "id": chat_id,
         "summary_context": "",
-        "retrieved_cases": [],
+        "retrieved_cases": "",
     })
     return chat_id
 
@@ -115,7 +117,7 @@ def prepare_search_query(user_query, summary_context):
         # Fallback to original query if there's an error
         return user_query
 
-def search_indian_kanoon(optimized_query, original_query, pagenum=0, max_results=MAX_SEARCH_RESULTS_FROM_KANOON):
+def search_indian_kanoon(optimized_query, original_query, pagenum=0, max_results=MAX_SEARCH_PAGES):
     """Search Indian Kanoon API for relevant cases with optimized storage"""
     logger.info(f"the optimized query is .. {optimized_query}")
 
@@ -395,10 +397,8 @@ def handle_query(chat_id, query):
     # Fetch context from Convex
 
     logger.info(f"the chat id is .. {chat_id}")
+    update_chat_status(chat_id, AIStatus.INITIALIZING.value)
     ctx = convex.query("chats:get", {"id": chat_id}) or {}
-    
-    # update chat status
-    update_chat_status(chat_id, "thinking")
     
     summary_context = ctx.get("summary_context", "")
     #retrieved_cases = ctx.get("retrieved_cases", "")
@@ -420,33 +420,44 @@ def handle_query(chat_id, query):
     new_cases = []
     if research_result.get("isNewResearchRequired", True):
         # Generate optimized search query
-        update_chat_status(chat_id, "preparing optimum search")
+        update_chat_status(chat_id, AIStatus.SEARCHING_DATABASES.value)
         optimized_query = prepare_search_query(query, summary_context)
-        new_cases = search_indian_kanoon(optimized_query, query)
+        new_cases = get_enhanced_case_results(optimized_query, query, max_pages=MAX_SEARCH_PAGES, max_content_fetch=MAX_CONTENT_FETCH, max_per_domain=MAX_PER_DOMAIN) 
   
     case_text = ""
   
     case_titles = set()
-    
-    update_chat_status(chat_id, "referencing cases from archive")
+    case_urls = set()
+    update_chat_status(chat_id, AIStatus.ANALYZING_CASES.value)
 
+    search_results = [] # this would collect search meta data
     for case in new_cases:
         case_details = {
             "title": case["title"],
-            "court": case["court"],
-            "year": case["year"],
-            "details": case["doc_text"]
+         #   "court": case["court"],
+         #   "year": case["year"],
+            "details": case["doc_text"],
+       #     "url": case["doc_url"]
         }
         case_text += json.dumps(case_details, indent=4) + "\n\n"
-        case_titles.add(case["title"])
+        #case_titles.add(case["title"])
+        #case_urls.add(case["doc_url"])
+        search_result = {
+            "title": case["title"],
+            "url": case["doc_url"]
+        }
+        search_results.append(search_result)
+        logger.info(f"Added search_result: {search_result}")
+
 
     
     logger.info(f"calling big AI")
 
     message_for_ai = create_message_structure_for_gemini(chat_id, query, conversation_history, case_text)
+
     logger.info(f"message to be sent to big AI : {message_for_ai}")
 
-    update_chat_status(chat_id, "reasoning and preparing response");
+    update_chat_status(chat_id, AIStatus.SYNTHESIZING.value)
 
     generatedContentResponse = gemini.generate_content(message_for_ai)
     response = generatedContentResponse.parts[0].text
@@ -474,17 +485,19 @@ def handle_query(chat_id, query):
         "retrieved_cases": case_titles_str,
     })
     
-    update_chat_status(chat_id, "completed research")
 
-    final_reponse = create_response(response, optimized_query)
+    final_reponse = create_response(response, optimized_query, search_results)
     logger.info(f"the final message being sent is : {final_reponse}")
+    
+    update_chat_status(chat_id, AIStatus.COMPLETED.value)
+
     return final_reponse
 
 
 #end main business method
 
 
-def create_response(answer, optimized_search):
+def create_response(answer, optimized_search, search_results):
     """
     Creates a JSON response with the answer and optimized search query.
 
@@ -497,7 +510,8 @@ def create_response(answer, optimized_search):
     """
     response = {
         "answer": answer,
-        "optimized_search": optimized_search
+        "optimized_search": optimized_search,
+        "references": search_results,
     }
     return response
 
@@ -595,6 +609,7 @@ def create_message_structure_for_gemini(chat_id, current_user_query, conversatio
     # For now, let's focus on current session history.
     # ---
 
+    logger.info(f"the case text is .. {case_text}")
     # 2. Get the System Prompt
     system_prompt_text = get_system_prompt2()
 
@@ -622,7 +637,7 @@ def create_message_structure_for_gemini(chat_id, current_user_query, conversatio
          # Include case text contextually within the user's turn
          # Add instructions ONCE in the system prompt about using it only if relevant.
          final_user_message_parts.append({
-             "text": f"\n\nPlease consider the following potentially relevant cases legal for the query above (use only if directly applicable): \n```\n{case_text}\n```"
+             "text": f"\n\nPlease consider the following potentially relevant legal information found online for the query above (use only if directly applicable): \n```\n{case_text}\n```"
          })
 
     # Add the final composite user message to the history

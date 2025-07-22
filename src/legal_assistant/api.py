@@ -1,3 +1,4 @@
+from typing import List
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from .legal_assistant import handle_query, create_chat_session
@@ -17,6 +18,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+class Reference(BaseModel):
+    title: str
+    url: str
 
 class QueryRequest(BaseModel):
     chat_id: str = None
@@ -26,6 +30,7 @@ class QueryResponse(BaseModel):
     chat_id: str
     response: str
     optimized_search: str
+    references: List[Reference]
 
 @app.post("/query", response_model=QueryResponse)
 async def query_legal_assistant(request: QueryRequest):
@@ -40,10 +45,12 @@ async def query_legal_assistant(request: QueryRequest):
     logger.info(f"time taken for response : {time_taken}")
     
     optimized_search = response['optimized_search'] if response['optimized_search'] is not None else ''
-    return QueryResponse(chat_id=chat_id, response=response['answer'], optimized_search=optimized_search)
+    references = response['references'] if response['references'] is not None else []
+    
+    return QueryResponse(chat_id=chat_id, response=response['answer'], optimized_search=optimized_search, references=references)
 
 
 
 @app.get("/health", status_code=200)
 async def health_check():
-    return {"status": "healthy", "version": "4.0"}
+    return {"status": "healthy", "version": "6.0"}
